@@ -15,7 +15,7 @@ char* strcpy(char* dest, const char* src) {
   return dest;
 }
 int main(void) {
-  
+
   char str[20] = "hello, world!!!";
   char *m = (char *)better_malloc(100);
   char *p = (char *)better_malloc(50);
@@ -28,7 +28,7 @@ int main(void) {
   strcpy(p,str);
   printu("%s\n",p);
   char *n = (char *)better_malloc(50);
-  
+
   if(m != n)
   {
     printu("your malloc is not complete.\n");

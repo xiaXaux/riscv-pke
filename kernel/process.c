@@ -64,3 +64,82 @@ void switch_to(process* proc) {
   // note, return_to_user takes two parameters @ and after lab2_1.
   return_to_user(proc->trapframe, user_satp);
 }
+
+uint64 alloc_va(uint64 n){
+    int pt = 0;
+    for(pt = 0;pt < current->unalloc_pt;pt++)
+        if(current->unalloc_list[pt].sz >= n)
+            break;
+    if(pt == current->unalloc_pt)
+        return 0;
+    uint64 va = current->unalloc_list[pt].va;
+    if(current->unalloc_list[pt].sz > n){
+        current->unalloc_list[pt].sz -= n;
+        current->unalloc_list[pt].va += n;
+    }else if(current->unalloc_list[pt].sz == n){
+        for(int i = pt;i < current->unalloc_pt - 1;i++)
+            current->unalloc_list[i] = current->unalloc_list[i + 1];
+        current->unalloc_pt--;
+    }
+    current->alloc_list[current->alloc_pt].va = va;
+    current->alloc_list[current->alloc_pt].sz = n;
+    current->alloc_pt++;
+    return va;
+}
+
+void alloc_and_map_page(){
+    uint64 pa = (uint64)alloc_page();
+    user_vm_map(current->pagetable,g_ufree_page,PGSIZE,pa,prot_to_type(PROT_READ | PROT_WRITE,1));
+    current->unalloc_list[current->unalloc_pt].va = g_ufree_page;
+    current->unalloc_list[current->unalloc_pt].sz = PGSIZE;
+    current->unalloc_pt++;
+    g_ufree_page += PGSIZE;
+
+    if(current->unalloc_pt >= 2){
+        if(current->unalloc_list[current->unalloc_pt - 2].va + current->unalloc_list[current->unalloc_pt - 2].sz ==
+            current->unalloc_list[current->unalloc_pt - 1].va){
+            current->unalloc_list[current->unalloc_pt - 2].sz += current->unalloc_list[current->unalloc_pt - 1].sz;
+            current->unalloc_pt--;
+        }
+    }
+}
+
+uint64 better_alloc(uint64 n){
+    uint64 va = alloc_va(n);
+    if(va == 0) {
+        alloc_and_map_page();
+        va = alloc_va(n);
+    }
+    return va;
+}
+
+void better_free(uint64 va){
+    int pt = 0;
+    for(pt = 0;pt < current->alloc_pt;pt++)
+        if(current->alloc_list[pt].va == va)
+            break;
+    uint64 n = current->alloc_list[pt].sz;
+    for(int i = pt;i < current->alloc_pt - 1;i++)
+        current->alloc_list[i] = current->alloc_list[i + 1];
+    current->alloc_pt--;
+    for(int i = 0;i <= current->unalloc_pt;i++){
+        if(i == current->unalloc_pt){
+            current->unalloc_list[i].va = va;
+            current->unalloc_list[i].sz = n;
+            current->unalloc_pt++;
+            break;
+        }else if(va < current->unalloc_list[i].va){
+            if(va + n == current->unalloc_list[i].va){
+                current->unalloc_list[i].va = va;
+                current->unalloc_list[i].sz += n;
+            }else{
+                for(int j = current->unalloc_pt;j > i;j--)
+                    current->unalloc_list[j] = current->unalloc_list[j - 1];
+                current->unalloc_pt++;
+                current->unalloc_list[i].va = va;
+                current->unalloc_list[i].sz = n;
+            }
+            break;
+        }
+    }
+}
