@@ -10,13 +10,17 @@
 #include "util/string.h"
 #include "spike_interface/spike_utils.h"
 #include "util/functions.h"
+#include "spike_interface/atomic.h"
 
 /* --- utility functions for virtual address mapping --- */
 //
 // establish mapping of virtual address [va, va+size] to phyiscal address [pa, pa+size]
 // with the permission of "perm".
 //
+spinlock_t vm_lock;
 int map_pages(pagetable_t page_dir, uint64 va, uint64 size, uint64 pa, int perm) {
+  spinlock_lock(&vm_lock);
+
   uint64 first, last;
   pte_t *pte;
 
@@ -27,6 +31,8 @@ int map_pages(pagetable_t page_dir, uint64 va, uint64 size, uint64 pa, int perm)
       panic("map_pages fails on mapping va (0x%lx) to pa (0x%lx)", first, pa);
     *pte = PA2PTE(pa) | perm | PTE_V;
   }
+
+  spinlock_unlock(&vm_lock);
   return 0;
 }
 
