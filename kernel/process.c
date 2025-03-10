@@ -211,10 +211,18 @@ int do_fork( process* parent)
             if (free_block_filter[(heap_block - heap_bottom) / PGSIZE])  // skip free blocks
               continue;
 
-            void* child_pa = alloc_page();
-            memcpy(child_pa, (void*)lookup_pa(parent->pagetable, heap_block), PGSIZE);
-            user_vm_map((pagetable_t)child->pagetable, heap_block, PGSIZE, (uint64)child_pa,
-                        prot_to_type(PROT_WRITE | PROT_READ, 1));
+            pte_t *pte = page_walk(parent->pagetable,heap_block,0);
+            uint64 pa = PTE2PA(*pte);
+            uint64 flag = PTE_FLAGS(*pte);
+            if(flag & PTE_W){
+                flag &= ~PTE_W;
+                flag |= PTE_C;
+                *pte = PA2PTE(pa) | flag;
+            }
+            user_vm_map((pagetable_t)child->pagetable, heap_block, PGSIZE, (uint64)lookup_pa(parent->pagetable, heap_block),
+                        flag);
+            pte = page_walk(child->pagetable,heap_block,0);
+
           }
 
           child->mapped_info[HEAP_SEGMENT].npages = parent->mapped_info[HEAP_SEGMENT].npages;

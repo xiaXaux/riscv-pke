@@ -111,11 +111,16 @@ void smode_trap_handler(void) {
       // invoke round-robin scheduler. added @lab3_3
       rrsched();
       break;
+    case CAUSE_FETCH_PAGE_FAULT:
     case CAUSE_STORE_PAGE_FAULT:
     case CAUSE_LOAD_PAGE_FAULT:
       // the address of missing page is stored in stval
       // call handle_user_page_fault to process page faults
-      handle_user_page_fault(cause, read_csr(sepc), read_csr(stval));
+      if(cowpage(current->pagetable, read_csr(stval)) == 0){
+          cowalloc(current->pagetable, read_csr(stval));
+      }else{
+          handle_user_page_fault(cause,read_csr(sepc), read_csr(stval));
+      }
       break;
     default:
       sprint("smode_trap_handler(): unexpected scause %p\n", read_csr(scause));

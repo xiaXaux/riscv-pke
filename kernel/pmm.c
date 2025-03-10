@@ -5,6 +5,9 @@
 #include "util/string.h"
 #include "memlayout.h"
 #include "spike_interface/spike_utils.h"
+#include "spike_interface/atomic.h"
+#include "vmm.h"
+#include "util/string.h"
 
 // _end is defined in kernel/kernel.lds, it marks the ending (virtual) address of PKE kernel
 extern char _end[];
@@ -19,6 +22,11 @@ typedef struct node {
   struct node *next;
 } list_node;
 
+struct {
+  spinlock_t lock;
+  int cnt[PHYS_TOP / PGSIZE];
+}ref;
+
 // g_free_mem_list is the head of the list of free physical memory pages
 static list_node g_free_mem_list;
 
@@ -28,8 +36,10 @@ static list_node g_free_mem_list;
 //
 static void create_freepage_list(uint64 start, uint64 end) {
   g_free_mem_list.next = 0;
-  for (uint64 p = ROUNDUP(start, PGSIZE); p + PGSIZE < end; p += PGSIZE)
-    free_page( (void *)p );
+  for (uint64 p = ROUNDUP(start, PGSIZE); p + PGSIZE < end; p += PGSIZE) {
+      addrefcnt((void *) p);
+      free_page((void *) p);
+  }
 }
 
 //
@@ -39,10 +49,14 @@ void free_page(void *pa) {
   if (((uint64)pa % PGSIZE) != 0 || (uint64)pa < free_mem_start_addr || (uint64)pa >= free_mem_end_addr)
     panic("free_page 0x%lx \n", pa);
 
-  // insert a physical page to g_free_mem_list
-  list_node *n = (list_node *)pa;
-  n->next = g_free_mem_list.next;
-  g_free_mem_list.next = n;
+  spinlock_lock(&ref.lock);
+  if(--ref.cnt[(uint64)pa / PGSIZE] == 0){
+        // insert a physical page to g_free_mem_list
+        list_node *n = (list_node *) pa;
+        n->next = g_free_mem_list.next;
+        g_free_mem_list.next = n;
+  }
+  spinlock_unlock(&ref.lock);
 }
 
 //
@@ -51,7 +65,12 @@ void free_page(void *pa) {
 //
 void *alloc_page(void) {
   list_node *n = g_free_mem_list.next;
-  if (n) g_free_mem_list.next = n->next;
+  if (n) {
+      spinlock_lock(&ref.lock);
+      ref.cnt[(uint64)n / PGSIZE]++;
+      spinlock_unlock(&ref.lock);
+      g_free_mem_list.next = n->next;
+  }
 
   return (void *)n;
 }
@@ -85,4 +104,45 @@ void pmm_init() {
   sprint("kernel memory manager is initializing ...\n");
   // create the list of free pages
   create_freepage_list(free_mem_start_addr, free_mem_end_addr);
+}
+
+int getrefcnt(void* pa){
+    spinlock_lock(&ref.lock);
+
+    int cnt = ref.cnt[(uint64)pa / PGSIZE];
+
+    spinlock_unlock(&ref.lock);
+
+    return cnt;
+}
+
+void addrefcnt(void* pa){
+    spinlock_lock(&ref.lock);
+
+    ref.cnt[(uint64)pa / PGSIZE]++;
+
+    spinlock_unlock(&ref.lock);
+}
+
+int cowpage(pagetable_t pagetable, uint64 va){
+    pte_t *pte = page_walk(pagetable,va,0);
+    if((*pte & PTE_C) != 0)
+        return 0;
+    return -1;
+}
+
+int cowalloc(pagetable_t pagetable,uint64 va){
+    sprint("handle_page_fault: %lx\n", va);
+    uint64 pa = lookup_pa(pagetable,va);
+    pte_t* pte = page_walk(pagetable,va,0);
+    int cnt = getrefcnt((void*)pa);
+
+    uint64 new_pa = (uint64)alloc_page();
+    memmove((void*)new_pa,(void*)pa,PGSIZE);
+    *pte &= ~PTE_V;
+
+    map_pages(pagetable,va,PGSIZE,new_pa,(PTE_FLAGS(*pte) | PTE_W) &~PTE_C);
+
+    free_page((void*)pa);
+    return 0;
 }
