@@ -137,3 +137,44 @@ void load_bincode_from_host_elf(process *p, char *filename) {
 
   sprint("Application program entry point (virtual address): 0x%lx\n", p->trapframe->epc);
 }
+
+int exec(process* p, const char *path, const char *para){
+    sprint("Application: %s\n", path);
+    //elf loading. elf_ctx is defined in kernel/elf.h, used to track the loading process.
+    elf_ctx elfloader;
+    // elf_info is defined above, used to tie the elf file and its corresponding process.
+    elf_info info;
+
+    info.f = vfs_open(path, O_RDONLY);
+    info.p = p;
+    // IS_ERR_VALUE is a macro defined in spike_interface/spike_htif.h
+    if (IS_ERR_VALUE(info.f)) panic("Fail on openning the input application program.\n");
+
+    // init elfloader context. elf_init() is defined above.
+    if (elf_init(&elfloader, &info) != EL_OK)
+        panic("fail to init elfloader.\n");
+
+    // load elf. elf_load() is defined above.
+    if (elf_load(&elfloader) != EL_OK) panic("Fail on loading elf.\n");
+
+    // entry (virtual, also physical in lab1_x) address
+    p->trapframe->epc = elfloader.ehdr.entry;
+
+    // close the vfs file
+    vfs_close( info.f );
+
+    const int num_args = 5;
+    uint64 ustack[num_args],sp = p->trapframe->regs.sp;
+    sp -= (strlen(para) + 1);
+    sp -= sp % 16;
+    memcpy(user_va_to_pa(p->pagetable,(void*)sp),para,strlen(para) + 1);
+    ustack[0] = sp;
+
+    sp -= (num_args + 1) * sizeof(uint64);
+    sp -= sp % 16;
+    memcpy(user_va_to_pa(p->pagetable,(void*)sp),(char*)ustack,(num_args + 1) * sizeof(uint64));
+    p->trapframe->regs.a1 = sp;
+    p->trapframe->regs.sp = sp;
+    sprint("Application program entry point (virtual address): 0x%lx\n", p->trapframe->epc);
+    return 1;
+}

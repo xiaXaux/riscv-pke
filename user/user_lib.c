@@ -167,3 +167,11 @@ int unlink_u(const char *fn){
 int close(int fd) {
   return do_user_call(SYS_user_close, fd, 0, 0, 0, 0, 0, 0);
 }
+
+int exec(const char *path,const char *para){
+    return do_user_call(SYS_user_exec,(uint64)path,(uint64)para, 0, 0, 0, 0, 0);
+}
+
+int wait(int n){
+    return do_user_call(SYS_user_wait,n, 0, 0, 0, 0, 0, 0);
+}

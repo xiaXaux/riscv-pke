@@ -17,6 +17,7 @@
 #include "memlayout.h"
 #include "sched.h"
 #include "spike_interface/spike_utils.h"
+#include "util/functions.h"
 
 //Two functions defined in kernel/usertrap.S
 extern char smode_trap_vector[];
@@ -159,6 +160,132 @@ process* alloc_process() {
   return &procs[i];
 }
 
+process* alloc_process_without_print() {
+    // locate the first usable process structure
+    int i;
+
+    for( i=0; i<NPROC; i++ )
+        if( procs[i].status == FREE ) break;
+
+    if( i>=NPROC ){
+        panic( "cannot find any free process structure.\n" );
+        return 0;
+    }
+
+    // init proc[i]'s vm space
+    procs[i].trapframe = (trapframe *)alloc_page();  //trapframe, used to save context
+    memset(procs[i].trapframe, 0, sizeof(trapframe));
+
+    // page directory
+    procs[i].pagetable = (pagetable_t)alloc_page();
+    memset((void *)procs[i].pagetable, 0, PGSIZE);
+
+    procs[i].kstack = (uint64)alloc_page() + PGSIZE;   //user kernel stack top
+    uint64 user_stack = (uint64)alloc_page();       //phisical address of user stack bottom
+    procs[i].trapframe->regs.sp = USER_STACK_TOP;  //virtual address of user stack top
+
+    // allocates a page to record memory regions (segments)
+    procs[i].mapped_info = (mapped_region*)alloc_page();
+    memset( procs[i].mapped_info, 0, PGSIZE );
+
+    // map user stack in userspace
+    user_vm_map((pagetable_t)procs[i].pagetable, USER_STACK_TOP - PGSIZE, PGSIZE,
+                user_stack, prot_to_type(PROT_WRITE | PROT_READ, 1));
+    procs[i].mapped_info[STACK_SEGMENT].va = USER_STACK_TOP - PGSIZE;
+    procs[i].mapped_info[STACK_SEGMENT].npages = 1;
+    procs[i].mapped_info[STACK_SEGMENT].seg_type = STACK_SEGMENT;
+
+    // map trapframe in user space (direct mapping as in kernel space).
+    user_vm_map((pagetable_t)procs[i].pagetable, (uint64)procs[i].trapframe, PGSIZE,
+            (uint64)procs[i].trapframe, prot_to_type(PROT_WRITE | PROT_READ, 0));
+    procs[i].mapped_info[CONTEXT_SEGMENT].va = (uint64)procs[i].trapframe;
+    procs[i].mapped_info[CONTEXT_SEGMENT].npages = 1;
+    procs[i].mapped_info[CONTEXT_SEGMENT].seg_type = CONTEXT_SEGMENT;
+
+    // map S-mode trap vector section in user space (direct mapping as in kernel space)
+    // we assume that the size of usertrap.S is smaller than a page.
+    user_vm_map((pagetable_t)procs[i].pagetable, (uint64)trap_sec_start, PGSIZE,
+            (uint64)trap_sec_start, prot_to_type(PROT_READ | PROT_EXEC, 0));
+    procs[i].mapped_info[SYSTEM_SEGMENT].va = (uint64)trap_sec_start;
+    procs[i].mapped_info[SYSTEM_SEGMENT].npages = 1;
+    procs[i].mapped_info[SYSTEM_SEGMENT].seg_type = SYSTEM_SEGMENT;
+
+
+    // initialize the process's heap manager
+    procs[i].user_heap.heap_top = USER_FREE_ADDRESS_START;
+    procs[i].user_heap.heap_bottom = USER_FREE_ADDRESS_START;
+    procs[i].user_heap.free_pages_count = 0;
+
+    // map user heap in userspace
+    procs[i].mapped_info[HEAP_SEGMENT].va = USER_FREE_ADDRESS_START;
+    procs[i].mapped_info[HEAP_SEGMENT].npages = 0;  // no pages are mapped to heap yet.
+    procs[i].mapped_info[HEAP_SEGMENT].seg_type = HEAP_SEGMENT;
+
+    procs[i].total_mapped_region = 4;
+
+    // initialize files_struct
+    procs[i].pfiles = init_proc_file_management();
+
+    // return after initialization.
+    return &procs[i];
+}
+
+void reset_process(process* proc){
+    // init proc[i]'s vm space
+    proc->trapframe = (trapframe *)alloc_page();  //trapframe, used to save context
+    memset(proc->trapframe, 0, sizeof(trapframe));
+
+    // page directory
+    proc->pagetable = (pagetable_t)alloc_page();
+    memset((void *)proc->pagetable, 0, PGSIZE);
+
+    proc->kstack = (uint64)alloc_page() + PGSIZE;   //user kernel stack top
+    uint64 user_stack = (uint64)alloc_page();       //phisical address of user stack bottom
+    proc->trapframe->regs.sp = USER_STACK_TOP;  //virtual address of user stack top
+
+    // allocates a page to record memory regions (segments)
+    proc->mapped_info = (mapped_region*)alloc_page();
+    memset( proc->mapped_info, 0, PGSIZE );
+
+    // map user stack in userspace
+    user_vm_map((pagetable_t)proc->pagetable, USER_STACK_TOP - PGSIZE, PGSIZE,
+                user_stack, prot_to_type(PROT_WRITE | PROT_READ, 1));
+    proc->mapped_info[STACK_SEGMENT].va = USER_STACK_TOP - PGSIZE;
+    proc->mapped_info[STACK_SEGMENT].npages = 1;
+    proc->mapped_info[STACK_SEGMENT].seg_type = STACK_SEGMENT;
+
+    // map trapframe in user space (direct mapping as in kernel space).
+    user_vm_map((pagetable_t)proc->pagetable, (uint64)proc->trapframe, PGSIZE,
+            (uint64)proc->trapframe, prot_to_type(PROT_WRITE | PROT_READ, 0));
+    proc->mapped_info[CONTEXT_SEGMENT].va = (uint64)proc->trapframe;
+    proc->mapped_info[CONTEXT_SEGMENT].npages = 1;
+    proc->mapped_info[CONTEXT_SEGMENT].seg_type = CONTEXT_SEGMENT;
+
+    // map S-mode trap vector section in user space (direct mapping as in kernel space)
+    // we assume that the size of usertrap.S is smaller than a page.
+    user_vm_map((pagetable_t)proc->pagetable, (uint64)trap_sec_start, PGSIZE,
+            (uint64)trap_sec_start, prot_to_type(PROT_READ | PROT_EXEC, 0));
+    proc->mapped_info[SYSTEM_SEGMENT].va = (uint64)trap_sec_start;
+    proc->mapped_info[SYSTEM_SEGMENT].npages = 1;
+    proc->mapped_info[SYSTEM_SEGMENT].seg_type = SYSTEM_SEGMENT;
+
+
+    // initialize the process's heap manager
+    proc->user_heap.heap_top = USER_FREE_ADDRESS_START;
+    proc->user_heap.heap_bottom = USER_FREE_ADDRESS_START;
+    proc->user_heap.free_pages_count = 0;
+
+    // map user heap in userspace
+    proc->mapped_info[HEAP_SEGMENT].va = USER_FREE_ADDRESS_START;
+    proc->mapped_info[HEAP_SEGMENT].npages = 0;  // no pages are mapped to heap yet.
+    proc->mapped_info[HEAP_SEGMENT].seg_type = HEAP_SEGMENT;
+
+    proc->total_mapped_region = 4;
+
+    // initialize files_struct
+    proc->pfiles = init_proc_file_management_without_print();
+}
+
 //
 // reclaim a process. added @lab3_1
 //
@@ -241,7 +368,7 @@ int do_fork( process* parent)
         user_vm_map((pagetable_t)child->pagetable,parent->mapped_info[i].va,PGSIZE * parent->mapped_info[i].npages,
                         lookup_pa(parent->pagetable,parent->mapped_info[i].va),
                         prot_to_type(PROT_READ | PROT_EXEC,1));
-        sprint("do_fork map code segment at pa:%p of parent to child at va:%p.\n", lookup_pa(parent->pagetable,parent->mapped_info[i].va),
+        sprint("do_fork map code segment at pa:%lx of parent to child at va:%lx.\n", lookup_pa(parent->pagetable,parent->mapped_info[i].va),
                parent->mapped_info[i].va);
 
         // after mapping, register the vm region (do not delete codes below!)
@@ -260,4 +387,38 @@ int do_fork( process* parent)
   insert_to_ready_queue( child );
 
   return child->pid;
+}
+
+int do_wait(int pid){
+    if(pid == -1){
+        int havekid = 0;
+        for(int i = 0;i < NPROC;i++)
+            if(procs[i].parent == current){
+                havekid = 1;
+                if(procs[i].status == ZOMBIE){
+                    procs[i].status = FREE;
+                    return i;
+                }
+            }
+        if(havekid){
+            insert_to_block_queue(current);
+            schedule();
+            return -1;
+        }
+        return -1;
+    }else if(pid >= 0 && pid < NPROC){
+        for(int i = 0;i < NPROC;i++)
+            if(procs[i].pid == pid && procs[i].parent == current){
+                if(procs[i].status == ZOMBIE){
+                    procs[i].status = FREE;
+                    return pid;
+                }else{
+                    insert_to_block_queue(current);
+                    schedule();
+                    return -1;
+                }
+            }
+        return -1;
+    }else
+        return -1;
 }
